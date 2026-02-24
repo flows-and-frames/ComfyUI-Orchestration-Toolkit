@@ -8,6 +8,7 @@ A custom node pack for ComfyUI that improves prompt handling and workflow contro
 
 A structured prompt management node that allows loading two different text files from separate folders directly into editable fields inside ComfyUI with a single click.  
 It automatically loads the most recently added text file from each folder and provides two independent editors with one-click content transfer between them and flexible output switching for efficient prompt handling.
+![PromptOrchestrator](assets/prompt_orchestrator.png)
 
 ###  Dynamic Node State Controller
 
