@@ -4,19 +4,19 @@ A custom node pack for ComfyUI that improves prompt handling and workflow contro
 
 ## Included Nodes
 
-###  PromptOrchestrator
+### PromptOrchestrator
 
 A structured prompt management node that allows loading two different text files from separate folders directly into editable fields inside ComfyUI with a single click.  
 It automatically loads the most recently added text file from each folder and provides two independent editors with one-click content transfer between them and flexible output switching for efficient prompt handling.
 
 ![PromptOrchestrator](assets/PromptOrchestrator.png)
 
-###  Dynamic Node State Controller
+### Node State Controller
 
 A workflow control node that allows you to enter the ID of any node and define what should happen to it when pressing the apply button.  
 You can mute, unmute, bypass, or unbypass any number of nodes with a single click — without adding additional connections to the canvas.
 
-![Dynamic Node State Controller](assets/DynamicNodeStateController.png)
+![Node State Controller](assets/Node%20State%20Controller.png)
 
 ## Installation
 
