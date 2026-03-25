@@ -1,14 +1,14 @@
 from .prompt_orchestration import PromptOrchestrator, WEB_DIRECTORY
-from .dynamic_node_state_controller import DynamicNodeStateController
+from .dynamic_node_state_controller import NodeStateController
 
 NODE_CLASS_MAPPINGS = {
     "PromptOrchestrator": PromptOrchestrator,
-    "prompt_orchestration/dynamic_node_state_controller": DynamicNodeStateController
+    "prompt_orchestration/node_state_controller": NodeStateController
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptOrchestrator": "PromptOrchestrator",
-    "prompt_orchestration/dynamic_node_state_controller": "Dynamic Node State Controller"
+    "prompt_orchestration/node_state_controller": "Node State Controller"
 }
 
 __all__ = [
