@@ -7,7 +7,9 @@ authors = [
 ]
 requires-python = ">=3.10"
 
+[project.urls]
+Repository = "https://github.com/flows-and-frames/ComfyUI-Orchestration-Toolkit"
+
 [tool.comfy]
 PublisherId = "flows-and-frames"
 DisplayName = "ComfyUI Orchestration Toolkit"
-Icon = ""
