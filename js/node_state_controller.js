@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 
-const CONTROLLER_NODE_TYPE = "prompt_orchestration/dynamic_node_state_controller";
+const CONTROLLER_NODE_TYPE = "prompt_orchestration/node_state_controller";
 let shortcutListenerRegistered = false;
 let capturingControllerNode = null;
 
@@ -299,7 +299,7 @@ function registerGlobalShortcutHandler() {
 }
 
 app.registerExtension({
-    name: "prompt_orchestration.dynamic_node_state_controller",
+    name: "prompt_orchestration.node_state_controller",
 
     registerCustomNodes() {
         registerGlobalShortcutHandler();
