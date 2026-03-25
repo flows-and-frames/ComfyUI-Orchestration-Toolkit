@@ -1,5 +1,5 @@
 from .prompt_orchestration import PromptOrchestrator, WEB_DIRECTORY
-from .dynamic_node_state_controller import NodeStateController
+from .node_state_controller import NodeStateController
 
 NODE_CLASS_MAPPINGS = {
     "PromptOrchestrator": PromptOrchestrator,
