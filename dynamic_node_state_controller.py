@@ -1,4 +1,4 @@
-class DynamicNodeStateController:
+class NodeStateController:
     @classmethod
     def INPUT_TYPES(cls):
         return {
