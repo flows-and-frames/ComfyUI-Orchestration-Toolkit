@@ -22,7 +22,7 @@ class PromptOrchestrator:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("Editor 1", "Editor 2")
     FUNCTION = "run"
-    CATEGORY = "Prompt"
+    CATEGORY = "prompt_orchestration"
 
     def run(self, folder_string_1, folder_string_2, editor_1, editor_2, use_editor_2):
         if use_editor_2:
