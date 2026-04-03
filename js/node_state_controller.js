@@ -130,6 +130,7 @@ function getRowActionFromWidget(row) {
 function syncLiveValuesIntoProperties(node) {
     if (!node) return;
     if (!node.properties) node.properties = {};
+    if (!Array.isArray(node.properties.rows)) node.properties.rows = [];
     if (!Array.isArray(node.rows)) node.rows = [];
 
     for (const row of node.rows) {
@@ -142,10 +143,17 @@ function syncLiveValuesIntoProperties(node) {
             ? node.shortcutWidget.value
             : node.properties.shortcut || "";
 
-    node.properties.rows = node.rows.map((row) => ({
-        id: row.id,
-        action: row.action
-    }));
+    const shouldPreserveStoredRows = !!node.properties.collapsed && node.rows.length === 0;
+
+    node.properties.rows = shouldPreserveStoredRows
+        ? node.properties.rows.map((row) => ({
+              id: String(row?.id ?? ""),
+              action: String(row?.action ?? "Mute")
+          }))
+        : node.rows.map((row) => ({
+              id: row.id,
+              action: row.action
+          }));
     node.properties.collapsed = !!node.properties.collapsed;
     node.properties.shortcut = normalizeShortcutString(liveShortcut);
 
@@ -174,6 +182,7 @@ function refreshAllCaptureButtonLabels() {
 
 function setCaptureNode(node) {
     capturingControllerNode = node || null;
+    refreshCaptureButtonLabel(node);
     refreshAllCaptureButtonLabels();
 }
 
@@ -461,7 +470,14 @@ app.registerExtension({
             syncLiveValuesIntoProperties(this);
             app.graph.beforeChange();
 
-            for (let row of this.rows) {
+            const actionRows =
+                Array.isArray(this.rows) && this.rows.length > 0
+                    ? this.rows
+                    : Array.isArray(this.properties?.rows)
+                        ? this.properties.rows
+                        : [];
+
+            for (let row of actionRows) {
                 if (!row.id) continue;
 
                 const id = Number(row.id);
