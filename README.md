@@ -25,5 +25,4 @@ Install directly via the ComfyUI Manager.
 Alternatively, clone the repository into your `ComfyUI/custom_nodes/` directory:
 
 ```bash
-cd ComfyUI/custom_nodes
 git clone https://github.com/flows-and-frames/ComfyUI-Orchestration-Toolkit.git
