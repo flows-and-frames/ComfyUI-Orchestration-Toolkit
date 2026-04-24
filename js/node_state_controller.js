@@ -1,8 +1,14 @@
 import { app } from "../../scripts/app.js";
 
 const CONTROLLER_NODE_TYPE = "prompt_orchestration/node_state_controller";
+const TARGET_KEY_PROPERTY = "node_state_controller_key";
+
 let shortcutListenerRegistered = false;
+let targetCaptureListenerRegistered = false;
 let capturingControllerNode = null;
+let targetCapturingControllerNode = null;
+let lastCapturedTargetKey = "";
+let lastCapturedTargetTime = 0;
 
 function normalizeShortcutPart(part) {
     if (!part) return "";
@@ -117,6 +123,22 @@ function getRowIdFromWidget(row) {
     return String(row.id ?? "").trim();
 }
 
+function getRowLabelFromWidget(row) {
+    if (!row) return "";
+
+    if (row.labelWidget && row.labelWidget.value !== undefined && row.labelWidget.value !== null) {
+        return String(row.labelWidget.value).trim();
+    }
+
+    return String(row.label ?? "").trim();
+}
+
+function getRowTargetKeyFromWidget(row) {
+    if (!row) return "";
+
+    return String(row.target_key ?? "").trim();
+}
+
 function getRowActionFromWidget(row) {
     if (!row) return "Mute";
 
@@ -127,6 +149,70 @@ function getRowActionFromWidget(row) {
     return String(row.action ?? "Mute");
 }
 
+function showNodeStateControllerWarning(message) {
+    console.warn(`[Dynamic Node State Controller] ${message}`);
+    window.alert(`Node State Controller warning:\n${message}`);
+}
+
+function createTargetKey() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        return `nsc_${window.crypto.randomUUID()}`;
+    }
+
+    return `nsc_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function getNodeLabel(node) {
+    if (!node) return "";
+    return String(node.title || node.type || "Node");
+}
+
+function getNodeStateControllerKey(node) {
+    if (!node || !node.properties) return "";
+    return String(node.properties[TARGET_KEY_PROPERTY] || "").trim();
+}
+
+function ensureNodeStateControllerKey(node) {
+    if (!node) return "";
+
+    if (!node.properties) node.properties = {};
+
+    const existingKey = getNodeStateControllerKey(node);
+    if (existingKey) return existingKey;
+
+    const newKey = createTargetKey();
+    node.properties[TARGET_KEY_PROPERTY] = newKey;
+    return newKey;
+}
+
+function findNodesByTargetKey(targetKey) {
+    if (!targetKey || !app.graph || !Array.isArray(app.graph._nodes)) return [];
+
+    return app.graph._nodes.filter((node) => {
+        if (!node || !node.properties) return false;
+        return getNodeStateControllerKey(node) === targetKey;
+    });
+}
+
+function applyRowAction(node, action) {
+    if (!node) return;
+
+    switch (action) {
+        case "Mute":
+            node.mode = 2;
+            break;
+        case "Unmute":
+            node.mode = 0;
+            break;
+        case "Bypass":
+            node.mode = 4;
+            break;
+        case "Unbypass":
+            node.mode = 0;
+            break;
+    }
+}
+
 function syncLiveValuesIntoProperties(node) {
     if (!node) return;
     if (!node.properties) node.properties = {};
@@ -134,7 +220,8 @@ function syncLiveValuesIntoProperties(node) {
     if (!Array.isArray(node.rows)) node.rows = [];
 
     for (const row of node.rows) {
-        row.id = getRowIdFromWidget(row);
+        row.label = getRowLabelFromWidget(row);
+        row.target_key = getRowTargetKeyFromWidget(row);
         row.action = getRowActionFromWidget(row);
     }
 
@@ -147,13 +234,18 @@ function syncLiveValuesIntoProperties(node) {
 
     node.properties.rows = shouldPreserveStoredRows
         ? node.properties.rows.map((row) => ({
-              id: String(row?.id ?? ""),
+              label: String(row?.label ?? ""),
+              target_key: String(row?.target_key ?? ""),
               action: String(row?.action ?? "Mute")
           }))
-        : node.rows.map((row) => ({
-              id: row.id,
-              action: row.action
-          }));
+        : node.rows
+              .filter((row) => row.target_key)
+              .map((row) => ({
+                  label: row.label,
+                  target_key: row.target_key,
+                  action: row.action
+              }));
+
     node.properties.collapsed = !!node.properties.collapsed;
     node.properties.shortcut = normalizeShortcutString(liveShortcut);
 
@@ -169,21 +261,226 @@ function refreshCaptureButtonLabel(node) {
         capturingControllerNode === node ? "Press shortcut..." : "Capture Shortcut";
 }
 
+function refreshTargetCaptureButtonLabel(node) {
+    if (!node || !node.targetCaptureWidget) return;
+
+    node.targetCaptureWidget.name =
+        targetCapturingControllerNode === node ? "Click target nodes..." : "Capture Target";
+}
+
 function refreshAllCaptureButtonLabels() {
     if (!app.graph || !Array.isArray(app.graph._nodes)) return;
 
     for (const node of app.graph._nodes) {
         if (!node || node.type !== CONTROLLER_NODE_TYPE) continue;
         refreshCaptureButtonLabel(node);
+        refreshTargetCaptureButtonLabel(node);
     }
 
     app.graph.setDirtyCanvas(true);
 }
 
+function refreshAllTargetCaptureButtonLabels() {
+    refreshAllCaptureButtonLabels();
+}
+
 function setCaptureNode(node) {
     capturingControllerNode = node || null;
+
+    if (capturingControllerNode) {
+        targetCapturingControllerNode = null;
+    }
+
     refreshCaptureButtonLabel(node);
     refreshAllCaptureButtonLabels();
+}
+
+function setTargetCaptureNode(node) {
+    targetCapturingControllerNode = node || null;
+
+    if (targetCapturingControllerNode) {
+        capturingControllerNode = null;
+    }
+
+    refreshTargetCaptureButtonLabel(node);
+    refreshAllTargetCaptureButtonLabels();
+}
+
+function getStoredRows(node) {
+    if (!node || !node.properties || !Array.isArray(node.properties.rows)) return [];
+
+    return node.properties.rows
+        .filter((row) => row?.target_key)
+        .map((row) => ({
+            label: String(row?.label ?? ""),
+            target_key: String(row?.target_key ?? ""),
+            action: String(row?.action ?? "Mute")
+        }));
+}
+
+function addTargetToController(controllerNode, targetNode) {
+    if (!controllerNode || !targetNode) return;
+    if (controllerNode === targetNode) return;
+
+    if (!controllerNode.properties) controllerNode.properties = {};
+    if (!Array.isArray(controllerNode.properties.rows)) controllerNode.properties.rows = [];
+
+    const targetKey = ensureNodeStateControllerKey(targetNode);
+    if (!targetKey) return;
+
+    const now = performance.now ? performance.now() : Date.now();
+    if (lastCapturedTargetKey === targetKey && now - lastCapturedTargetTime < 150) return;
+    lastCapturedTargetKey = targetKey;
+    lastCapturedTargetTime = now;
+
+    syncLiveValuesIntoProperties(controllerNode);
+
+    const label = getNodeLabel(targetNode);
+    const existingRow = controllerNode.properties.rows.find((row) => row.target_key === targetKey);
+
+    if (existingRow) {
+        existingRow.label = label;
+        controllerNode.rebuildUI();
+        controllerNode.syncProperties();
+        app.graph.setDirtyCanvas(true);
+        return;
+    }
+
+    controllerNode.properties.rows.push({
+        label,
+        target_key: targetKey,
+        action: "Mute"
+    });
+
+    controllerNode.rebuildUI();
+    controllerNode.syncProperties();
+    app.graph.setDirtyCanvas(true);
+}
+
+function getCanvasGraphPositionFromEvent(event) {
+    const canvas = app.canvas;
+    const canvasElement = canvas?.canvas;
+    if (!canvas || !canvasElement || !event) return null;
+
+    if (typeof canvas.convertEventToCanvas === "function") {
+        const pos = canvas.convertEventToCanvas(event);
+        if (Array.isArray(pos)) return pos;
+    }
+
+    if (typeof canvas.convertEventToCanvasOffset === "function") {
+        const offset = canvas.convertEventToCanvasOffset(event);
+
+        if (Array.isArray(offset)) {
+            if (canvas.ds && typeof canvas.ds.convertOffsetToCanvas === "function") {
+                return canvas.ds.convertOffsetToCanvas(offset);
+            }
+
+            if (canvas.ds && Array.isArray(canvas.ds.offset) && typeof canvas.ds.scale === "number") {
+                return [
+                    (offset[0] - canvas.ds.offset[0]) / canvas.ds.scale,
+                    (offset[1] - canvas.ds.offset[1]) / canvas.ds.scale
+                ];
+            }
+
+            return offset;
+        }
+    }
+
+    const rect = canvasElement.getBoundingClientRect();
+    const scaleX = canvasElement.width / rect.width;
+    const scaleY = canvasElement.height / rect.height;
+    const offsetX = (event.clientX - rect.left) * scaleX;
+    const offsetY = (event.clientY - rect.top) * scaleY;
+
+    if (canvas.ds && typeof canvas.ds.convertOffsetToCanvas === "function") {
+        return canvas.ds.convertOffsetToCanvas([offsetX, offsetY]);
+    }
+
+    if (canvas.ds && Array.isArray(canvas.ds.offset) && typeof canvas.ds.scale === "number") {
+        return [
+            (offsetX - canvas.ds.offset[0]) / canvas.ds.scale,
+            (offsetY - canvas.ds.offset[1]) / canvas.ds.scale
+        ];
+    }
+
+    return [offsetX, offsetY];
+}
+
+function getNodeFromCanvasEvent(event) {
+    const canvas = app.canvas;
+    if (!canvas || !app.graph || typeof app.graph.getNodeOnPos !== "function") return null;
+
+    const pos = getCanvasGraphPositionFromEvent(event);
+    if (!Array.isArray(pos)) return canvas.node_over || null;
+
+    return (
+        app.graph.getNodeOnPos(pos[0], pos[1], canvas.visible_nodes, 5) ||
+        canvas.node_over ||
+        null
+    );
+}
+
+function isGraphCanvasEvent(event) {
+    const canvasElement = app.canvas?.canvas;
+    if (!canvasElement) return false;
+
+    if (event.target === canvasElement) return true;
+
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    return path.includes(canvasElement);
+}
+
+function handleTargetCaptureMouseEvent(event) {
+    if (!targetCapturingControllerNode) return false;
+    if (!event || event.button !== 0) return false;
+    if (!isGraphCanvasEvent(event)) return false;
+
+    const targetNode = getNodeFromCanvasEvent(event);
+    if (!targetNode) return false;
+    if (targetNode === targetCapturingControllerNode) return false;
+
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    if (typeof event.stopPropagation === "function") event.stopPropagation();
+
+    app.graph.beforeChange();
+    addTargetToController(targetCapturingControllerNode, targetNode);
+    app.graph.afterChange();
+
+    return true;
+}
+
+function installTargetCaptureCanvasPatch() {
+    const canvas = app.canvas;
+
+    if (!canvas) {
+        setTimeout(installTargetCaptureCanvasPatch, 250);
+        return;
+    }
+
+    if (canvas.__nodeStateControllerTargetCapturePatched) return;
+    canvas.__nodeStateControllerTargetCapturePatched = true;
+
+    const originalProcessMouseDown = canvas.processMouseDown;
+
+    if (typeof originalProcessMouseDown === "function") {
+        canvas.processMouseDown = function (event) {
+            if (handleTargetCaptureMouseEvent(event)) {
+                return true;
+            }
+
+            return originalProcessMouseDown.apply(this, arguments);
+        };
+    }
+}
+
+function addSpacerWidget(node) {
+    const spacerWidget = node.addWidget("button", " ", null, () => {});
+    spacerWidget.serialize = false;
+    spacerWidget.disabled = true;
+    spacerWidget.computeSize = function () {
+        return [0, 16];
+    };
+    return spacerWidget;
 }
 
 function buildControllerWidgets(node) {
@@ -192,6 +489,19 @@ function buildControllerWidgets(node) {
     node.applyWidget = node.addWidget("button", "APPLY", null, () => {
         node.applyActions();
     });
+
+    node.targetCaptureWidget = node.addWidget(
+        "button",
+        targetCapturingControllerNode === node ? "Click target nodes..." : "Capture Target",
+        null,
+        () => {
+            if (targetCapturingControllerNode === node) {
+                setTargetCaptureNode(null);
+                return;
+            }
+            setTargetCaptureNode(node);
+        }
+    );
 
     node.collapseWidget = node.addWidget(
         "button",
@@ -234,9 +544,9 @@ function rebuildControllerFromProperties(node) {
     if (typeof node.properties.shortcut !== "string") node.properties.shortcut = "";
 
     node.rows = [];
-    buildControllerWidgets(node);
     node.rebuildUI();
     refreshCaptureButtonLabel(node);
+    refreshTargetCaptureButtonLabel(node);
 }
 
 function registerGlobalShortcutHandler() {
@@ -294,8 +604,8 @@ function registerGlobalShortcutHandler() {
         event.stopPropagation();
 
         if (matchingNodes.length > 1) {
-            console.warn(
-                `[Dynamic Node State Controller] Shortcut "${shortcut}" is used multiple times.`
+            showNodeStateControllerWarning(
+                "This shortcut is used by multiple Node State Controllers.\nPlease remove or change one shortcut."
             );
             return;
         }
@@ -307,11 +617,35 @@ function registerGlobalShortcutHandler() {
     });
 }
 
+function registerGlobalTargetCaptureHandler() {
+    if (targetCaptureListenerRegistered) return;
+    targetCaptureListenerRegistered = true;
+
+    installTargetCaptureCanvasPatch();
+
+    window.addEventListener(
+        "pointerdown",
+        (event) => {
+            handleTargetCaptureMouseEvent(event);
+        },
+        true
+    );
+
+    window.addEventListener(
+        "mousedown",
+        (event) => {
+            handleTargetCaptureMouseEvent(event);
+        },
+        true
+    );
+}
+
 app.registerExtension({
     name: "prompt_orchestration.node_state_controller",
 
     registerCustomNodes() {
         registerGlobalShortcutHandler();
+        registerGlobalTargetCaptureHandler();
 
         const nodeType = LiteGraph.registered_node_types[CONTROLLER_NODE_TYPE];
         if (!nodeType) return;
@@ -343,10 +677,13 @@ app.registerExtension({
             const savedProperties = info?.properties || {};
 
             if (Array.isArray(savedProperties.rows)) {
-                this.properties.rows = savedProperties.rows.map((row) => ({
-                    id: String(row?.id ?? ""),
-                    action: String(row?.action ?? "Mute")
-                }));
+                this.properties.rows = savedProperties.rows
+                    .map((row) => ({
+                        label: String(row?.label ?? ""),
+                        target_key: String(row?.target_key ?? ""),
+                        action: String(row?.action ?? "Mute")
+                    }))
+                    .filter((row) => row.target_key);
             } else if (!Array.isArray(this.properties.rows)) {
                 this.properties.rows = [];
             }
@@ -377,10 +714,13 @@ app.registerExtension({
 
             if (!o.properties) o.properties = {};
             o.properties.rows = Array.isArray(this.properties.rows)
-                ? this.properties.rows.map((row) => ({
-                    id: String(row?.id ?? ""),
-                    action: String(row?.action ?? "Mute")
-                }))
+                ? this.properties.rows
+                      .filter((row) => row?.target_key)
+                      .map((row) => ({
+                          label: String(row?.label ?? ""),
+                          target_key: String(row?.target_key ?? ""),
+                          action: String(row?.action ?? "Mute")
+                      }))
                 : [];
             o.properties.collapsed = !!this.properties.collapsed;
             o.properties.shortcut = normalizeShortcutString(this.properties.shortcut || "");
@@ -389,44 +729,53 @@ app.registerExtension({
         nodeType.prototype.toggleCollapse = function () {
             syncLiveValuesIntoProperties(this);
             this.properties.collapsed = !this.properties.collapsed;
-            buildControllerWidgets(this);
             this.rebuildUI();
             refreshCaptureButtonLabel(this);
+            refreshTargetCaptureButtonLabel(this);
         };
 
         nodeType.prototype.rebuildUI = function () {
+            const storedRows = getStoredRows(this);
+
+            buildControllerWidgets(this);
+
             if (this.properties.collapsed) {
-                this.setSize([340, 200]);
+                this.rows = [];
+                this.setSize([340, 230]);
                 app.graph.setDirtyCanvas(true);
                 return;
             }
 
             this.rows = [];
 
-            for (let data of this.properties.rows) {
-                this.addRowWithData(data.id, data.action);
-            }
-
-            if (this.rows.length === 0) {
-                this.addRowWithData("", "Mute");
+            for (let data of storedRows) {
+                this.addRowWithData(data.label, data.target_key, data.action);
             }
 
             this.updateLayout();
         };
 
-        nodeType.prototype.addRowWithData = function (idValue, actionValue) {
-            const row = { id: idValue, action: actionValue };
+        nodeType.prototype.addRowWithData = function (labelValue, targetKeyValue, actionValue) {
+            const row = {
+                label: String(labelValue ?? ""),
+                target_key: String(targetKeyValue ?? ""),
+                action: String(actionValue ?? "Mute"),
+                spacerWidget: null
+            };
 
-            row.idWidget = this.addWidget("text", "Node ID", idValue, (v) => {
-                row.id = v.trim();
+            if (Array.isArray(this.rows) && this.rows.length > 0) {
+                row.spacerWidget = addSpacerWidget(this);
+            }
+
+            row.labelWidget = this.addWidget("text", "Target", row.label, (v) => {
+                row.label = String(v ?? "").trim();
                 this.syncProperties();
-                this.checkAddRow();
             });
 
             row.actionWidget = this.addWidget(
                 "combo",
                 "Action",
-                actionValue,
+                row.action,
                 (v) => {
                     row.action = v;
                     this.syncProperties();
@@ -438,12 +787,16 @@ app.registerExtension({
 
             row.removeWidget = this.addWidget("button", "✖ Remove", null, () => {
                 this.widgets = this.widgets.filter(
-                    (w) => w !== row.idWidget && w !== row.actionWidget && w !== row.removeWidget
+                    (w) =>
+                        w !== row.spacerWidget &&
+                        w !== row.labelWidget &&
+                        w !== row.actionWidget &&
+                        w !== row.removeWidget
                 );
 
                 this.rows.splice(this.rows.indexOf(row), 1);
                 this.syncProperties();
-                this.updateLayout();
+                this.rebuildUI();
             });
 
             this.rows.push(row);
@@ -451,10 +804,7 @@ app.registerExtension({
         };
 
         nodeType.prototype.checkAddRow = function () {
-            const lastRow = this.rows[this.rows.length - 1];
-            if (lastRow && lastRow.id !== "") {
-                this.addRowWithData("", "Mute");
-            }
+            return;
         };
 
         nodeType.prototype.syncProperties = function () {
@@ -462,7 +812,7 @@ app.registerExtension({
         };
 
         nodeType.prototype.updateLayout = function () {
-            this.setSize([340, 230 + this.rows.length * 70]);
+            this.setSize([340, 230 + this.rows.length * 92]);
             app.graph.setDirtyCanvas(true);
         };
 
@@ -477,31 +827,40 @@ app.registerExtension({
                         ? this.properties.rows
                         : [];
 
+            const duplicateTargets = [];
+
             for (let row of actionRows) {
-                if (!row.id) continue;
+                if (!row.target_key) continue;
 
-                const id = Number(row.id);
-                if (isNaN(id)) continue;
+                const matches = findNodesByTargetKey(row.target_key);
 
-                const node = app.graph.getNodeById(id);
-                if (!node) continue;
-
-                switch (row.action) {
-                    case "Mute":
-                        node.mode = 2;
-                        break;
-                    case "Unmute":
-                        node.mode = 0;
-                        break;
-                    case "Bypass":
-                        node.mode = 4;
-                        break;
-                    case "Unbypass":
-                        node.mode = 0;
-                        break;
+                if (matches.length === 0) {
+                    console.warn(
+                        `[Dynamic Node State Controller] Target "${row.label}" was not found.`
+                    );
+                    continue;
                 }
+
+                if (matches.length > 1) {
+                    duplicateTargets.push(String(row.label || "Unnamed target"));
+                    continue;
+                }
+
+                const node = matches[0];
+                row.label = getNodeLabel(node);
+
+                applyRowAction(node, row.action);
             }
 
+            if (duplicateTargets.length > 0) {
+                const uniqueTargets = [...new Set(duplicateTargets)];
+
+                showNodeStateControllerWarning(
+                    `These targets exist multiple times:\n- ${uniqueTargets.join("\n- ")}\n\nThis usually happens after duplicating nodes or modules.\nActions were skipped to prevent wrong node changes.`
+                );
+            }
+
+            this.syncProperties();
             app.graph.afterChange();
             app.graph.setDirtyCanvas(true);
         };
