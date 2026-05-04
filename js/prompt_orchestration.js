@@ -20,11 +20,11 @@ app.registerExtension({
                 return this.widgets.find(w => w.name === name);
             };
 
-            const folder1Widget = getWidget("folder_string_1");
-            const folder2Widget = getWidget("folder_string_2");
-            const editor1Widget = getWidget("editor_1");
-            const editor2Widget = getWidget("editor_2");
-            const useEditor2Widget = getWidget("use_editor_2");
+            const curatedPromptsFolderWidget = getWidget("curated_prompts_folder");
+            const generatedPromptsFolderWidget = getWidget("generated_prompts_folder");
+            const multiPromptTestingEditorWidget = getWidget("multi_prompt_testing_editor");
+            const promptGenerationEditorWidget = getWidget("prompt_generation_editor");
+            const usePromptGenerationBranchWidget = getWidget("use_prompt_generation_branch");
 
             // ---------- API Call ----------
 
@@ -42,39 +42,39 @@ app.registerExtension({
 
                 const result = await response.json();
 
-                if (result.value !== undefined && editor1Widget) {
-                    editor1Widget.value = result.value;
+                if (result.value !== undefined && multiPromptTestingEditorWidget) {
+                    multiPromptTestingEditorWidget.value = result.value;
                     this.setDirtyCanvas(true, true);
                 }
             };
 
             // ---------- Buttons ----------
 
-            const string1Button = this.addWidget("button", "String 1", "", () => {
-                if (folder1Widget && folder1Widget.value) {
-                    loadFromFolder(folder1Widget.value);
+            const curatedPromptsButton = this.addWidget("button", "Load Curated Prompts", "", () => {
+                if (curatedPromptsFolderWidget && curatedPromptsFolderWidget.value) {
+                    loadFromFolder(curatedPromptsFolderWidget.value);
                 }
             });
 
-            const string2Button = this.addWidget("button", "String 2", "", () => {
-                if (folder2Widget && folder2Widget.value) {
-                    loadFromFolder(folder2Widget.value);
+            const generatedPromptsButton = this.addWidget("button", "Load Generated Prompts", "", () => {
+                if (generatedPromptsFolderWidget && generatedPromptsFolderWidget.value) {
+                    loadFromFolder(generatedPromptsFolderWidget.value);
                 }
             });
 
-            const pasteEditor1Button = this.addWidget("button", "Paste Editor 1", "", () => {
+            const pasteInGenerationEditorButton = this.addWidget("button", "Paste in Generation Editor", "", () => {
 
-                if (!editor1Widget || !editor2Widget) return;
+                if (!multiPromptTestingEditorWidget || !promptGenerationEditorWidget) return;
 
-                const e1 = editor1Widget.value || "";
-                const e2 = editor2Widget.value || "";
+                const sourceEditorValue = multiPromptTestingEditorWidget.value || "";
+                const targetEditorValue = promptGenerationEditorWidget.value || "";
 
-                if (!e1.trim()) return;
+                if (!sourceEditorValue.trim()) return;
 
-                if (!e2.trim()) {
-                    editor2Widget.value = e1;
+                if (!targetEditorValue.trim()) {
+                    promptGenerationEditorWidget.value = sourceEditorValue;
                 } else {
-                    editor2Widget.value = e2 + "\n" + e1;
+                    promptGenerationEditorWidget.value = targetEditorValue + "\n" + sourceEditorValue;
                 }
 
                 this.setDirtyCanvas(true, true);
@@ -82,25 +82,25 @@ app.registerExtension({
 
             // ---------- Layout (korrekt mit splice & dynamischen Indizes) ----------
 
-            // String 1 unter folder_string_1
-            let folder1Index = this.widgets.findIndex(w => w.name === "folder_string_1");
-            this.widgets.splice(this.widgets.indexOf(string1Button), 1);
-            this.widgets.splice(folder1Index + 1, 0, string1Button);
+            // Load Curated Prompts unter curated_prompts_folder
+            let curatedPromptsFolderIndex = this.widgets.findIndex(w => w.name === "curated_prompts_folder");
+            this.widgets.splice(this.widgets.indexOf(curatedPromptsButton), 1);
+            this.widgets.splice(curatedPromptsFolderIndex + 1, 0, curatedPromptsButton);
 
-            // String 2 unter folder_string_2
-            let folder2Index = this.widgets.findIndex(w => w.name === "folder_string_2");
-            this.widgets.splice(this.widgets.indexOf(string2Button), 1);
-            this.widgets.splice(folder2Index + 1, 0, string2Button);
+            // Load Generated Prompts unter generated_prompts_folder
+            let generatedPromptsFolderIndex = this.widgets.findIndex(w => w.name === "generated_prompts_folder");
+            this.widgets.splice(this.widgets.indexOf(generatedPromptsButton), 1);
+            this.widgets.splice(generatedPromptsFolderIndex + 1, 0, generatedPromptsButton);
 
-            // use_editor_2 unter editor_1
-            let editor1Index = this.widgets.findIndex(w => w.name === "editor_1");
-            this.widgets.splice(this.widgets.indexOf(useEditor2Widget), 1);
-            this.widgets.splice(editor1Index + 1, 0, useEditor2Widget);
+            // use_prompt_generation_branch unter multi_prompt_testing_editor
+            let multiPromptTestingEditorIndex = this.widgets.findIndex(w => w.name === "multi_prompt_testing_editor");
+            this.widgets.splice(this.widgets.indexOf(usePromptGenerationBranchWidget), 1);
+            this.widgets.splice(multiPromptTestingEditorIndex + 1, 0, usePromptGenerationBranchWidget);
 
-            // Paste Editor 1 unter use_editor_2
-            let useEditor2Index = this.widgets.findIndex(w => w.name === "use_editor_2");
-            this.widgets.splice(this.widgets.indexOf(pasteEditor1Button), 1);
-            this.widgets.splice(useEditor2Index + 1, 0, pasteEditor1Button);
+            // Paste in Generation Editor unter use_prompt_generation_branch
+            let usePromptGenerationBranchIndex = this.widgets.findIndex(w => w.name === "use_prompt_generation_branch");
+            this.widgets.splice(this.widgets.indexOf(pasteInGenerationEditorButton), 1);
+            this.widgets.splice(usePromptGenerationBranchIndex + 1, 0, pasteInGenerationEditorButton);
         };
     }
 });
