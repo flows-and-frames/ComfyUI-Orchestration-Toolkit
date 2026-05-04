@@ -24,8 +24,17 @@ This node is part of a workflow module built for structured multi-prompt testing
 
 ### Node State Controller
 
-A workflow control node that allows you to enter the ID of any node and define what should happen to it when pressing the apply button.  
-You can mute, unmute, bypass, or unbypass any number of nodes with a single click — without adding additional connections to the canvas.
+A workflow control node for fast node state handling in ComfyUI.
+
+Targets can be captured from the canvas and assigned an action:
+
+- **Mute**
+- **Unmute**
+- **Bypass**
+- **Unbypass**
+
+The controller can apply all configured actions instantly with a single button click or an optional keyboard shortcut.  
+It helps control workflows with multiple branches without adding extra connections to the canvas.
 
 ![Node State Controller](assets/NodeStateController.png)
 
