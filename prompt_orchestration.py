@@ -11,24 +11,31 @@ class PromptOrchestrator:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "folder_string_1": ("STRING", {"default": ""}),
-                "folder_string_2": ("STRING", {"default": ""}),
-                "editor_1": ("STRING", {"multiline": True}),
-                "editor_2": ("STRING", {"multiline": True}),
-                "use_editor_2": ("BOOLEAN", {"default": False}),
+                "curated_prompts_folder": ("STRING", {"default": ""}),
+                "generated_prompts_folder": ("STRING", {"default": ""}),
+                "multi_prompt_testing_editor": ("STRING", {"multiline": True}),
+                "prompt_generation_editor": ("STRING", {"multiline": True}),
+                "use_prompt_generation_branch": ("BOOLEAN", {"default": False}),
             }
         }
 
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("Editor 1", "Editor 2")
+    RETURN_NAMES = ("Multi-Prompt Testing Branch", "Prompt Generation Branch")
     FUNCTION = "run"
-    CATEGORY = "prompt_orchestration"
+    CATEGORY = "Prompt"
 
-    def run(self, folder_string_1, folder_string_2, editor_1, editor_2, use_editor_2):
-        if use_editor_2:
-            return (None, editor_2)
+    def run(
+        self,
+        curated_prompts_folder,
+        generated_prompts_folder,
+        multi_prompt_testing_editor,
+        prompt_generation_editor,
+        use_prompt_generation_branch
+    ):
+        if use_prompt_generation_branch:
+            return (None, prompt_generation_editor)
         else:
-            return (editor_1, None)
+            return (multi_prompt_testing_editor, None)
 
 
 @PromptServer.instance.routes.post("/prompt_orchestration/load_latest")
