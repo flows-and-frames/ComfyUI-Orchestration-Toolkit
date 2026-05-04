@@ -6,8 +6,19 @@ A custom node pack for ComfyUI that improves prompt handling and workflow contro
 
 ### PromptOrchestrator
 
-A structured prompt management node that allows loading two different text files from separate folders directly into editable fields inside ComfyUI with a single click.  
-It automatically loads the most recently added text file from each folder and provides two independent editors with one-click content transfer between them and flexible output switching for efficient prompt handling.
+A prompt management node designed for efficient text prompt handling.
+
+It provides a clear interface for working with prompt lists stored as `.txt` files and separates the workflow into two branches:
+
+- **Multi-Prompt Testing Branch**  
+  Loads curated prompt lists from the `CuratedPrompts` folder for testing and comparing multiple prompts.
+
+- **Prompt Generation Branch**  
+  Loads generated prompt lists from the `GeneratedPrompts` folder for prompt creation, refinement, or reuse.
+
+The node loads the latest `.txt` file from each folder, provides two editable prompt fields, allows pasting the testing editor content into the generation editor, and lets you choose which branch is sent to the output.
+
+This node is part of a workflow module built for structured multi-prompt testing and prompt generation inside ComfyUI.
 
 ![PromptOrchestrator](assets/PromptOrchestrator.png)
 
