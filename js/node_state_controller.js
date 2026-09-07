@@ -2,9 +2,10 @@ import { app } from "../../scripts/app.js";
 
 const CONTROLLER_NODE_TYPE = "prompt_orchestration/node_state_controller";
 const TARGET_KEY_PROPERTY = "node_state_controller_key";
+const TARGET_CAPTURE_HANDLER_PROPERTY = "__promptOrchestrationNodeStateTargetCaptureHandler";
+const SHORTCUT_HANDLER_PROPERTY = "__promptOrchestrationNodeStateShortcutHandler";
+const CONTROLLER_WIDTH = 340;
 
-let shortcutListenerRegistered = false;
-let targetCaptureListenerRegistered = false;
 let capturingControllerNode = null;
 let targetCapturingControllerNode = null;
 let lastCapturedTargetKey = "";
@@ -40,6 +41,17 @@ function normalizeShortcutPart(part) {
     }
 
     return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
+function getShortcutPartFromEvent(event) {
+    const code = String(event?.code ?? "");
+    const numpadDigitMatch = /^Numpad([0-9])$/.exec(code);
+
+    if (numpadDigitMatch) {
+        return numpadDigitMatch[1];
+    }
+
+    return normalizeShortcutPart(event?.key);
 }
 
 function normalizeShortcutString(shortcut) {
@@ -81,7 +93,7 @@ function buildShortcutFromEvent(event) {
     if (event.shiftKey) parts.push("Shift");
     if (event.metaKey) parts.push("Meta");
 
-    const key = normalizeShortcutPart(event.key);
+    const key = getShortcutPartFromEvent(event);
 
     if (!key || ["Ctrl", "Alt", "Shift", "Meta"].includes(key)) {
         return "";
@@ -357,124 +369,144 @@ function addTargetToController(controllerNode, targetNode) {
     app.graph.setDirtyCanvas(true);
 }
 
+function getEventPath(event) {
+    if (typeof event?.composedPath === "function") {
+        return event.composedPath();
+    }
+
+    return event?.target ? [event.target] : [];
+}
+
+function normalizeGraphNodeId(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return null;
+
+    return /^-?\d+$/.test(text) ? Number(text) : text;
+}
+
+function getNodeFromVueEvent(event, graph) {
+    if (!graph || typeof graph.getNodeById !== "function") return null;
+
+    for (const element of getEventPath(event)) {
+        if (
+            !element ||
+            typeof element.matches !== "function" ||
+            !element.matches(".lg-node[data-node-id]")
+        ) {
+            continue;
+        }
+
+        const rawNodeId = element.getAttribute("data-node-id");
+        if (rawNodeId === null) continue;
+
+        const nodeId = normalizeGraphNodeId(rawNodeId);
+        if (nodeId === null) continue;
+
+        const node = graph.getNodeById(nodeId) || graph.getNodeById(String(rawNodeId));
+        if (node) return node;
+    }
+
+    return null;
+}
+
 function getCanvasGraphPositionFromEvent(event) {
     const canvas = app.canvas;
     const canvasElement = canvas?.canvas;
     if (!canvas || !canvasElement || !event) return null;
 
-    if (typeof canvas.convertEventToCanvas === "function") {
-        const pos = canvas.convertEventToCanvas(event);
-        if (Array.isArray(pos)) return pos;
-    }
-
     if (typeof canvas.convertEventToCanvasOffset === "function") {
-        const offset = canvas.convertEventToCanvasOffset(event);
-
-        if (Array.isArray(offset)) {
-            if (canvas.ds && typeof canvas.ds.convertOffsetToCanvas === "function") {
-                return canvas.ds.convertOffsetToCanvas(offset);
-            }
-
-            if (canvas.ds && Array.isArray(canvas.ds.offset) && typeof canvas.ds.scale === "number") {
-                return [
-                    (offset[0] - canvas.ds.offset[0]) / canvas.ds.scale,
-                    (offset[1] - canvas.ds.offset[1]) / canvas.ds.scale
-                ];
-            }
-
-            return offset;
-        }
+        const graphPosition = canvas.convertEventToCanvasOffset(event);
+        if (Array.isArray(graphPosition)) return graphPosition;
     }
 
     const rect = canvasElement.getBoundingClientRect();
-    const scaleX = canvasElement.width / rect.width;
-    const scaleY = canvasElement.height / rect.height;
-    const offsetX = (event.clientX - rect.left) * scaleX;
-    const offsetY = (event.clientY - rect.top) * scaleY;
+    const canvasPosition = [
+        event.clientX - rect.left,
+        event.clientY - rect.top
+    ];
 
-    if (canvas.ds && typeof canvas.ds.convertOffsetToCanvas === "function") {
-        return canvas.ds.convertOffsetToCanvas([offsetX, offsetY]);
+    if (typeof canvas.convertCanvasToOffset === "function") {
+        return canvas.convertCanvasToOffset(canvasPosition);
+    }
+
+    if (canvas.ds && typeof canvas.ds.convertCanvasToOffset === "function") {
+        return canvas.ds.convertCanvasToOffset(canvasPosition);
     }
 
     if (canvas.ds && Array.isArray(canvas.ds.offset) && typeof canvas.ds.scale === "number") {
         return [
-            (offsetX - canvas.ds.offset[0]) / canvas.ds.scale,
-            (offsetY - canvas.ds.offset[1]) / canvas.ds.scale
+            (canvasPosition[0] - canvas.ds.offset[0]) / canvas.ds.scale,
+            (canvasPosition[1] - canvas.ds.offset[1]) / canvas.ds.scale
         ];
     }
 
-    return [offsetX, offsetY];
+    return canvasPosition;
 }
 
 function getNodeFromCanvasEvent(event) {
     const canvas = app.canvas;
-    if (!canvas || !app.graph || typeof app.graph.getNodeOnPos !== "function") return null;
+    const graph = canvas?.graph;
+    if (!canvas || !graph) return null;
+
+    const vueNode = getNodeFromVueEvent(event, graph);
+    if (vueNode) return vueNode;
+
+    if (!getEventPath(event).includes(canvas.canvas)) return null;
+    if (typeof graph.getNodeOnPos !== "function") return null;
 
     const pos = getCanvasGraphPositionFromEvent(event);
-    if (!Array.isArray(pos)) return canvas.node_over || null;
+    if (!Array.isArray(pos)) return null;
 
-    return (
-        app.graph.getNodeOnPos(pos[0], pos[1], canvas.visible_nodes, 5) ||
-        canvas.node_over ||
-        null
+    return graph.getNodeOnPos(pos[0], pos[1], canvas.visible_nodes, 5) || null;
+}
+
+function isControllerAttachedToGraph(controllerNode) {
+    return !!(
+        controllerNode?.graph &&
+        Array.isArray(controllerNode.graph._nodes) &&
+        controllerNode.graph._nodes.includes(controllerNode)
     );
 }
 
-function isGraphCanvasEvent(event) {
-    const canvasElement = app.canvas?.canvas;
-    if (!canvasElement) return false;
-
-    if (event.target === canvasElement) return true;
-
-    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
-    return path.includes(canvasElement);
-}
-
 function handleTargetCaptureMouseEvent(event) {
-    if (!targetCapturingControllerNode) return false;
+    const controllerNode = targetCapturingControllerNode;
+    if (!controllerNode) return false;
     if (!event || event.button !== 0) return false;
-    if (!isGraphCanvasEvent(event)) return false;
+
+    if (!isControllerAttachedToGraph(controllerNode)) {
+        setTargetCaptureNode(null);
+        return false;
+    }
 
     const targetNode = getNodeFromCanvasEvent(event);
     if (!targetNode) return false;
-    if (targetNode === targetCapturingControllerNode) return false;
+    if (targetNode === controllerNode) return false;
+
+    const activeGraph = app.canvas?.graph;
+    if (activeGraph !== controllerNode.graph || targetNode.graph !== controllerNode.graph) {
+        setTargetCaptureNode(null);
+        showNodeStateControllerWarning(
+            "Target Capture only supports nodes in the same graph as the controller."
+        );
+        return false;
+    }
 
     if (typeof event.preventDefault === "function") event.preventDefault();
     if (typeof event.stopPropagation === "function") event.stopPropagation();
 
-    app.graph.beforeChange();
-    addTargetToController(targetCapturingControllerNode, targetNode);
-    app.graph.afterChange();
+    controllerNode.graph.beforeChange();
+    try {
+        addTargetToController(controllerNode, targetNode);
+    } finally {
+        controllerNode.graph.afterChange();
+    }
 
     return true;
 }
 
-function installTargetCaptureCanvasPatch() {
-    const canvas = app.canvas;
-
-    if (!canvas) {
-        setTimeout(installTargetCaptureCanvasPatch, 250);
-        return;
-    }
-
-    if (canvas.__nodeStateControllerTargetCapturePatched) return;
-    canvas.__nodeStateControllerTargetCapturePatched = true;
-
-    const originalProcessMouseDown = canvas.processMouseDown;
-
-    if (typeof originalProcessMouseDown === "function") {
-        canvas.processMouseDown = function (event) {
-            if (handleTargetCaptureMouseEvent(event)) {
-                return true;
-            }
-
-            return originalProcessMouseDown.apply(this, arguments);
-        };
-    }
-}
-
-function addSpacerWidget(node) {
-    const spacerWidget = node.addWidget("button", " ", null, () => {});
+function addSpacerWidget(node, targetKey) {
+    const spacerWidget = node.addWidget("button", `Spacer:${targetKey}`, null, () => {});
+    spacerWidget.label = " ";
     spacerWidget.serialize = false;
     spacerWidget.disabled = true;
     spacerWidget.computeSize = function () {
@@ -489,6 +521,34 @@ function buildControllerWidgets(node) {
     node.applyWidget = node.addWidget("button", "APPLY", null, () => {
         node.applyActions();
     });
+    node.applyWidget.computeSize = function () {
+        const standardHeight = Number(LiteGraph.NODE_WIDGET_HEIGHT) || 20;
+        return [0, standardHeight * 2];
+    };
+    node.applyWidget.draw = function (ctx, _node, width, y, _height, lowQuality) {
+        const height = this.computeSize(width)[1];
+        const margin = 15;
+
+        ctx.save();
+        ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR || "#222";
+        ctx.fillRect(margin, y, width - margin * 2, height);
+
+        if (!lowQuality && !this.computedDisabled) {
+            ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR || "#666";
+            ctx.strokeRect(margin, y, width - margin * 2, height);
+        }
+
+        if (!lowQuality) {
+            const standardTextSize = Number(LiteGraph.NODE_TEXT_SIZE) || 14;
+            ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR || "#DDD";
+            ctx.font = `bold ${Math.max(18, standardTextSize + 4)}px Arial`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("APPLY", width * 0.5, y + height * 0.5);
+        }
+
+        ctx.restore();
+    };
 
     node.targetCaptureWidget = node.addWidget(
         "button",
@@ -550,14 +610,16 @@ function rebuildControllerFromProperties(node) {
 }
 
 function registerGlobalShortcutHandler() {
-    if (shortcutListenerRegistered) return;
-    shortcutListenerRegistered = true;
+    const previousHandler = window[SHORTCUT_HANDLER_PROPERTY];
+    if (typeof previousHandler === "function") {
+        window.removeEventListener("keydown", previousHandler, true);
+    }
 
-    window.addEventListener("keydown", (event) => {
+    const shortcutHandler = (event) => {
         if (event.repeat) return;
 
         if (capturingControllerNode) {
-            const pressedKey = normalizeShortcutPart(event.key);
+            const pressedKey = getShortcutPartFromEvent(event);
             const capturedShortcut = buildShortcutFromEvent(event);
 
             if (!pressedKey) return;
@@ -614,30 +676,24 @@ function registerGlobalShortcutHandler() {
         if (typeof controllerNode.applyActions !== "function") return;
 
         controllerNode.applyActions();
-    });
+    };
+
+    window[SHORTCUT_HANDLER_PROPERTY] = shortcutHandler;
+    window.addEventListener("keydown", shortcutHandler, true);
 }
 
 function registerGlobalTargetCaptureHandler() {
-    if (targetCaptureListenerRegistered) return;
-    targetCaptureListenerRegistered = true;
+    const previousHandler = window[TARGET_CAPTURE_HANDLER_PROPERTY];
+    if (typeof previousHandler === "function") {
+        window.removeEventListener("pointerdown", previousHandler, true);
+    }
 
-    installTargetCaptureCanvasPatch();
+    const targetCaptureHandler = (event) => {
+        handleTargetCaptureMouseEvent(event);
+    };
 
-    window.addEventListener(
-        "pointerdown",
-        (event) => {
-            handleTargetCaptureMouseEvent(event);
-        },
-        true
-    );
-
-    window.addEventListener(
-        "mousedown",
-        (event) => {
-            handleTargetCaptureMouseEvent(event);
-        },
-        true
-    );
+    window[TARGET_CAPTURE_HANDLER_PROPERTY] = targetCaptureHandler;
+    window.addEventListener("pointerdown", targetCaptureHandler, true);
 }
 
 app.registerExtension({
@@ -653,6 +709,7 @@ app.registerExtension({
         const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
         const originalOnConfigure = nodeType.prototype.onConfigure;
         const originalOnSerialize = nodeType.prototype.onSerialize;
+        const originalOnRemoved = nodeType.prototype.onRemoved;
 
         nodeType.prototype.onNodeCreated = function () {
             if (originalOnNodeCreated) {
@@ -726,6 +783,20 @@ app.registerExtension({
             o.properties.shortcut = normalizeShortcutString(this.properties.shortcut || "");
         };
 
+        nodeType.prototype.onRemoved = function () {
+            if (capturingControllerNode === this) {
+                setCaptureNode(null);
+            }
+
+            if (targetCapturingControllerNode === this) {
+                setTargetCaptureNode(null);
+            }
+
+            if (originalOnRemoved) {
+                return originalOnRemoved.apply(this, arguments);
+            }
+        };
+
         nodeType.prototype.toggleCollapse = function () {
             syncLiveValuesIntoProperties(this);
             this.properties.collapsed = !this.properties.collapsed;
@@ -741,7 +812,7 @@ app.registerExtension({
 
             if (this.properties.collapsed) {
                 this.rows = [];
-                this.setSize([340, 230]);
+                this.setSize([CONTROLLER_WIDTH, Math.ceil(this.computeSize()[1])]);
                 app.graph.setDirtyCanvas(true);
                 return;
             }
@@ -764,17 +835,18 @@ app.registerExtension({
             };
 
             if (Array.isArray(this.rows) && this.rows.length > 0) {
-                row.spacerWidget = addSpacerWidget(this);
+                row.spacerWidget = addSpacerWidget(this, row.target_key);
             }
 
-            row.labelWidget = this.addWidget("text", "Target", row.label, (v) => {
+            row.labelWidget = this.addWidget("text", `Target:${row.target_key}`, row.label, (v) => {
                 row.label = String(v ?? "").trim();
                 this.syncProperties();
             });
+            row.labelWidget.label = "Target";
 
             row.actionWidget = this.addWidget(
                 "combo",
-                "Action",
+                `Action:${row.target_key}`,
                 row.action,
                 (v) => {
                     row.action = v;
@@ -784,8 +856,9 @@ app.registerExtension({
                     values: ["Mute", "Unmute", "Bypass", "Unbypass"]
                 }
             );
+            row.actionWidget.label = "Action";
 
-            row.removeWidget = this.addWidget("button", "✖ Remove", null, () => {
+            row.removeWidget = this.addWidget("button", `Remove:${row.target_key}`, null, () => {
                 this.widgets = this.widgets.filter(
                     (w) =>
                         w !== row.spacerWidget &&
@@ -798,6 +871,7 @@ app.registerExtension({
                 this.syncProperties();
                 this.rebuildUI();
             });
+            row.removeWidget.label = "✖ Remove";
 
             this.rows.push(row);
             this.syncProperties();
@@ -812,7 +886,7 @@ app.registerExtension({
         };
 
         nodeType.prototype.updateLayout = function () {
-            this.setSize([340, 230 + this.rows.length * 92]);
+            this.setSize([CONTROLLER_WIDTH, Math.ceil(this.computeSize()[1])]);
             app.graph.setDirtyCanvas(true);
         };
 

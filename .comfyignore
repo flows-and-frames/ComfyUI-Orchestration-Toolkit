@@ -1,0 +1,6 @@
+# GitHub-only automation
+/.github/
+
+# Repository-only Git configuration
+/.gitattributes
+/.gitignore

@@ -1,7 +1,8 @@
 [project]
 name = "orchestration-toolkit"
-version = "0.2.1"
+version = "0.2.6"
 description = "Prompt handling and workflow state control nodes for ComfyUI."
+license = { file = "LICENSE" }
 authors = [
     { name = "Flows & Frames" }
 ]
