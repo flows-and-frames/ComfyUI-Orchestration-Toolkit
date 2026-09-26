@@ -166,6 +166,28 @@ function showNodeStateControllerWarning(message) {
     window.alert(`Node State Controller warning:\n${message}`);
 }
 
+/**
+ * Nicht blockierende Meldung mit dem Titel des Controllers als Ueberschrift.
+ *
+ * Gleiches Muster wie notify in prompt_storage.js. Ergebnismeldungen eines Knopfes sollen
+ * nicht wie showNodeStateControllerWarning ein Fenster oeffnen, das man bei jedem Druck
+ * wegklicken muss.
+ */
+function notifyController(controllerNode, message, kind = "info") {
+    const title = String(controllerNode?.title || "Node State Controller");
+    const severity = kind === "warn" ? "warn" : kind === "success" ? "success" : "info";
+    console.info(`[Dynamic Node State Controller] ${title}: ${message}`);
+
+    const toast = app.extensionManager?.toast;
+    if (toast?.add) {
+        toast.add({ severity, summary: title, detail: message, life: 6000 });
+    }
+}
+
+function pluralize(count, singular, plural) {
+    return `${count} ${count === 1 ? singular : plural}`;
+}
+
 function createTargetKey() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
         return `nsc_${window.crypto.randomUUID()}`;
@@ -242,21 +264,34 @@ function syncLiveValuesIntoProperties(node) {
             ? node.shortcutWidget.value
             : node.properties.shortcut || "";
 
-    const shouldPreserveStoredRows = !!node.properties.collapsed && node.rows.length === 0;
+    // properties.rows ist die vollstaendige Wahrheit, node.rows zeigt nur die sichtbare
+    // Seite. Die sichtbaren Zeilen werden deshalb EINGEMISCHT, nicht ersetzt — sonst
+    // loescht jede Synchronisierung alle Zeilen der uebrigen Seiten.
+    const storedRows = node.properties.rows.map((row) => ({
+        label: String(row?.label ?? ""),
+        target_key: String(row?.target_key ?? ""),
+        action: String(row?.action ?? "Mute")
+    }));
 
-    node.properties.rows = shouldPreserveStoredRows
-        ? node.properties.rows.map((row) => ({
-              label: String(row?.label ?? ""),
-              target_key: String(row?.target_key ?? ""),
-              action: String(row?.action ?? "Mute")
-          }))
-        : node.rows
-              .filter((row) => row.target_key)
-              .map((row) => ({
-                  label: row.label,
-                  target_key: row.target_key,
-                  action: row.action
-              }));
+    const visibleRows = node.rows
+        .filter((row) => row.target_key)
+        .map((row) => ({
+            label: row.label,
+            target_key: row.target_key,
+            action: row.action
+        }));
+
+    if (visibleRows.length === 0) {
+        node.properties.rows = storedRows;
+    } else {
+        const visibleByKey = new Map(visibleRows.map((row) => [row.target_key, row]));
+        const merged = storedRows.map((row) => visibleByKey.get(row.target_key) ?? row);
+        const storedKeys = new Set(storedRows.map((row) => row.target_key));
+        for (const row of visibleRows) {
+            if (!storedKeys.has(row.target_key)) merged.push(row);
+        }
+        node.properties.rows = merged;
+    }
 
     node.properties.collapsed = !!node.properties.collapsed;
     node.properties.shortcut = normalizeShortcutString(liveShortcut);
@@ -330,43 +365,320 @@ function getStoredRows(node) {
         }));
 }
 
-function addTargetToController(controllerNode, targetNode) {
-    if (!controllerNode || !targetNode) return;
-    if (controllerNode === targetNode) return;
+const NODE_MODE_MUTED = 2;
+const NODE_MODE_BYPASSED = 4;
+
+/** Die Action, die dem aktuellen Modus einer Node entspricht. */
+function actionForNodeMode(node) {
+    switch (node?.mode) {
+        case NODE_MODE_MUTED:
+            return "Mute";
+        case NODE_MODE_BYPASSED:
+            return "Bypass";
+        default:
+            return "Unmute";
+    }
+}
+
+/** Output-Nodes tragen die Kennzeichnung in ihren nodeData. */
+function isOutputNode(node) {
+    return Boolean(node?.constructor?.nodeData?.output_node);
+}
+
+/** Sichtbare Zeilen je Seite. */
+const ROWS_PER_PAGE = 10;
+
+/**
+ * Die Auswahl, wie sie unmittelbar vor dem letzten Mausklick bestand.
+ *
+ * Noetig, weil ein Klick auf den Capture-Knopf die Controller-Node selektiert und die
+ * vorherige Mehrfachauswahl damit aufhebt. Der globale pointerdown-Handler laeuft in der
+ * Capture-Phase und sieht die Auswahl noch, bevor LiteGraph sie ersetzt.
+ */
+let selectionBeforeClick = [];
+
+function rememberSelectionBeforeClick() {
+    selectionBeforeClick = getSelectedGraphNodes();
+}
+
+/** Die aktuell markierten Nodes der Canvas. */
+function getSelectedGraphNodes() {
+    const selection = app.canvas?.selected_nodes;
+    if (!selection) return [];
+    return Object.values(selection).filter(Boolean);
+}
+
+function refreshControllerAfterCapture(controllerNode) {
+    controllerNode.rebuildUI();
+    controllerNode.syncProperties();
+    app.graph.setDirtyCanvas(true);
+}
+
+/**
+ * Nimmt eine Node als Target auf.
+ *
+ * options.updateAction  Bestehende Zeilen bekommen den aktuellen Modus. Nur Update from
+ *                       Graph setzt das. Capture und Snapshot fuegen nur hinzu und lassen
+ *                       Handarbeit in Ruhe.
+ * options.deferRefresh  Kein rebuildUI je Node. Der Aufrufer aktualisiert einmal am
+ *                       Ende - sonst kostet eine Auswahl mit vielen Nodes je Node
+ *                       einen vollstaendigen UI-Neuaufbau.
+ */
+function addTargetToController(controllerNode, targetNode, options) {
+    if (!controllerNode || !targetNode) return false;
+    if (controllerNode === targetNode) return false;
+
+    const updateAction = options?.updateAction === true;
+    const deferRefresh = options?.deferRefresh === true;
 
     if (!controllerNode.properties) controllerNode.properties = {};
     if (!Array.isArray(controllerNode.properties.rows)) controllerNode.properties.rows = [];
 
     const targetKey = ensureNodeStateControllerKey(targetNode);
-    if (!targetKey) return;
+    if (!targetKey) return false;
 
-    const now = performance.now ? performance.now() : Date.now();
-    if (lastCapturedTargetKey === targetKey && now - lastCapturedTargetTime < 150) return;
-    lastCapturedTargetKey = targetKey;
-    lastCapturedTargetTime = now;
+    if (!deferRefresh) {
+        const now = performance.now ? performance.now() : Date.now();
+        if (lastCapturedTargetKey === targetKey && now - lastCapturedTargetTime < 150) return false;
+        lastCapturedTargetKey = targetKey;
+        lastCapturedTargetTime = now;
+    }
 
-    syncLiveValuesIntoProperties(controllerNode);
+    // Im Stapel darf hier NICHT synchronisiert werden: syncLiveValuesIntoProperties baut
+    // properties.rows aus den Widget-Zeilen neu auf, und die Widgets werden erst am Ende
+    // des Stapels neu gebaut. Ein Aufruf je Node loescht deshalb alle zuvor angehaengten
+    // Zeilen wieder — es ueberlebt nur die letzte.
+    if (!deferRefresh) syncLiveValuesIntoProperties(controllerNode);
 
     const label = getNodeLabel(targetNode);
     const existingRow = controllerNode.properties.rows.find((row) => row.target_key === targetKey);
 
     if (existingRow) {
         existingRow.label = label;
-        controllerNode.rebuildUI();
-        controllerNode.syncProperties();
-        app.graph.setDirtyCanvas(true);
-        return;
+        if (updateAction) existingRow.action = actionForNodeMode(targetNode);
+        if (!deferRefresh) refreshControllerAfterCapture(controllerNode);
+        return true;
     }
 
     controllerNode.properties.rows.push({
         label,
         target_key: targetKey,
-        action: "Mute"
+        action: actionForNodeMode(targetNode)
     });
 
-    controllerNode.rebuildUI();
-    controllerNode.syncProperties();
-    app.graph.setDirtyCanvas(true);
+    if (!deferRefresh) refreshControllerAfterCapture(controllerNode);
+    return true;
+}
+
+/** Nimmt mehrere Nodes in einem Durchgang auf und baut die UI genau einmal neu. */
+function addTargetsToController(controllerNode, targetNodes, options) {
+    if (!controllerNode || !Array.isArray(targetNodes) || targetNodes.length === 0) return 0;
+
+    // Genau einmal, vor der Schleife. Siehe Begruendung in addTargetToController.
+    syncLiveValuesIntoProperties(controllerNode);
+
+    let captured = 0;
+    for (const targetNode of targetNodes) {
+        if (addTargetToController(controllerNode, targetNode, { ...options, deferRefresh: true })) {
+            captured++;
+        }
+    }
+
+    if (captured > 0) refreshControllerAfterCapture(controllerNode);
+    return captured;
+}
+
+/**
+ * Nimmt alle Output-Nodes des Graphen auf, die noch fehlen, mit ihrem aktuellen Zustand.
+ *
+ * ComfyUI fuehrt rueckwaerts von den Output-Nodes aus; sie allein entscheiden, welcher
+ * Zweig laeuft. Deshalb genuegt diese Auswahl fuer die Zweigsteuerung.
+ *
+ * Bestehende Zeilen bleiben unveraendert. Frueher setzte der Snapshot auch sie auf den
+ * aktuellen Zustand; auf einem Controller gedrueckt, dessen Variante gerade nicht
+ * anlag, ueberschrieb er sie damit mit einer fremden Variante. Neu einlesen ist jetzt
+ * ausschliesslich Aufgabe von Update from Graph.
+ */
+function snapshotOutputsToController(controllerNode) {
+    if (!controllerNode || !controllerNode.graph) return;
+
+    const outputs = controllerNode.graph._nodes.filter(
+        (node) => node !== controllerNode && isOutputNode(node)
+    );
+
+    if (outputs.length === 0) {
+        showNodeStateControllerWarning(
+            "No output nodes found in this graph." +
+                " Snapshot captures output nodes only."
+        );
+        return;
+    }
+
+    controllerNode.graph.beforeChange();
+    try {
+        const captured = addTargetsToController(controllerNode, outputs);
+        console.log(
+            `[Dynamic Node State Controller] Snapshot: ${captured} of ${outputs.length} output nodes captured.`
+        );
+    } finally {
+        controllerNode.graph.afterChange();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Update from Graph und Freigabe kopierter Schluessel
+// ---------------------------------------------------------------------------
+
+/** Verzeichnis Schluessel -> Nodes. Dieselbe Bauweise wie in applyActions. */
+function buildTargetKeyIndex(graph) {
+    const index = new Map();
+
+    for (const graphNode of graph?._nodes ?? []) {
+        if (!graphNode || !graphNode.properties) continue;
+        const key = getNodeStateControllerKey(graphNode);
+        if (!key) continue;
+        const bucket = index.get(key);
+        if (bucket) bucket.push(graphNode);
+        else index.set(key, [graphNode]);
+    }
+
+    return index;
+}
+
+/**
+ * Setzt jede Zeile auf den Zustand, in dem ihre Node gerade steht. Fuegt nichts hinzu
+ * und entfernt nichts.
+ *
+ * Der Knopf liest den Graphen, nicht den Controller. Er gehoert deshalb nur auf einen
+ * Controller, dessen Variante gerade anliegt - sonst wird diese Variante zur Kopie der
+ * anliegenden.
+ */
+function updateControllerFromGraph(controllerNode) {
+    if (!controllerNode || !controllerNode.graph) return;
+
+    // Genau einmal vor der Schleife, wie bei jeder Stapelaufnahme.
+    syncLiveValuesIntoProperties(controllerNode);
+
+    const rows = getStoredRows(controllerNode);
+    if (rows.length === 0) {
+        notifyController(controllerNode, "No targets to update.");
+        return;
+    }
+
+    // Dieselbe Aufloesung wie applyActions: Was APPLY schreiben wuerde, liest dieser
+    // Knopf auch.
+    const index = buildTargetKeyIndex(app.graph);
+
+    let updated = 0;
+    let changed = 0;
+    let notFound = 0;
+    let duplicated = 0;
+
+    controllerNode.graph.beforeChange();
+    try {
+        for (const row of rows) {
+            const matches = index.get(row.target_key) ?? [];
+            if (matches.length === 0) {
+                notFound++;
+                continue;
+            }
+            if (matches.length > 1) {
+                duplicated++;
+                continue;
+            }
+
+            const actionBefore = row.action;
+            const done = addTargetToController(controllerNode, matches[0], {
+                updateAction: true,
+                deferRefresh: true
+            });
+            if (!done) continue;
+
+            updated++;
+            const stored = controllerNode.properties.rows.find(
+                (candidate) => candidate.target_key === row.target_key
+            );
+            if (stored && stored.action !== actionBefore) changed++;
+        }
+
+        refreshControllerAfterCapture(controllerNode);
+    } finally {
+        controllerNode.graph.afterChange();
+    }
+
+    const parts = [`${pluralize(updated, "row", "rows")} updated (${changed} changed)`];
+    if (notFound > 0) parts.push(`${pluralize(notFound, "target", "targets")} not found`);
+    if (duplicated > 0) parts.push(`${pluralize(duplicated, "target", "targets")} duplicated`);
+    notifyController(
+        controllerNode,
+        `${parts.join(", ")}.`,
+        notFound + duplicated > 0 ? "warn" : "success"
+    );
+}
+
+/** Nummer einer Node als Zahl. Node-Nummern sind im Frontend Zeichenketten. */
+function numericItemId(item) {
+    const value = Number(item?.id);
+    return Number.isInteger(value) ? value : null;
+}
+
+/**
+ * Kopien verlieren ihren Schluessel.
+ *
+ * Laeuft nach jedem Einfuegen, Klonen oder Alt-Ziehen. Alle diese Wege enden in
+ * LGraphCanvas._deserializeItems: Dort werden zuerst nur die eingefuegten Dinge
+ * markiert - selectItems hebt jede andere Auswahl auf - und danach wird auf jeder Node
+ * onAfterGraphConfigured aufgerufen. Beim Laden eines Workflows laeuft derselbe Haken;
+ * dann ist nichts markiert, und es geschieht nichts.
+ *
+ * Gibt es einen Schluessel doppelt, verliert ihn jede Kopie. Kopie heisst: markiert und
+ * mit hoeherer Nummer als jede unmarkierte Node im Graphen. Eingefuegtes bekommt immer
+ * die hoechsten Nummern. Die zweite Bedingung schuetzt Originale, die eine eingefuegte
+ * Gruppe beim Markieren ihres Inhalts mitmarkiert haben koennte.
+ *
+ * Der Schluessel wird entfernt, nicht erneuert: Die Kopie ist danach von niemandem
+ * gesteuert, und ein spaeteres Capture gibt ihr einen neuen. Gibt es den Schluessel im
+ * Graphen nur einmal - etwa nach dem Einfuegen in einen anderen Workflow -, geschieht
+ * nichts, und mitkopierte Controller steuern ihre mitkopierten Nodes weiter.
+ */
+function releasePastedCopies(graph) {
+    if (!graph) return;
+
+    let maxUnselectedId = -Infinity;
+    const holdersByKey = new Map();
+
+    for (const graphNode of graph._nodes ?? []) {
+        if (!graphNode) continue;
+
+        const id = numericItemId(graphNode);
+        if (!graphNode.selected && id !== null && id > maxUnselectedId) maxUnselectedId = id;
+
+        const key = getNodeStateControllerKey(graphNode);
+        if (!key) continue;
+        const bucket = holdersByKey.get(key);
+        if (bucket) bucket.push(graphNode);
+        else holdersByKey.set(key, [graphNode]);
+    }
+
+    let released = 0;
+    for (const holders of holdersByKey.values()) {
+        if (holders.length < 2) continue;
+        if (!holders.some((graphNode) => !graphNode.selected)) continue;
+
+        for (const graphNode of holders) {
+            if (!graphNode.selected) continue;
+            const id = numericItemId(graphNode);
+            if (id === null || id <= maxUnselectedId) continue;
+            delete graphNode.properties[TARGET_KEY_PROPERTY];
+            released++;
+        }
+    }
+
+    if (released > 0) {
+        console.info(
+            `[Dynamic Node State Controller] Released ${pluralize(released, "key", "keys")} from pasted copies.`
+        );
+    }
 }
 
 function getEventPath(event) {
@@ -494,9 +806,26 @@ function handleTargetCaptureMouseEvent(event) {
     if (typeof event.preventDefault === "function") event.preventDefault();
     if (typeof event.stopPropagation === "function") event.stopPropagation();
 
+    // Ist mehr als eine Node markiert und die angeklickte gehoert dazu, wird die ganze
+    // Auswahl aufgenommen. Ein einzelner Klick verhaelt sich unveraendert.
+    const selection = getSelectedGraphNodes();
+    const batch =
+        selection.length > 1 && selection.includes(targetNode)
+            ? selection.filter(
+                  (node) => node !== controllerNode && node.graph === controllerNode.graph
+              )
+            : [targetNode];
+
     controllerNode.graph.beforeChange();
     try {
-        addTargetToController(controllerNode, targetNode);
+        if (batch.length > 1) {
+            const captured = addTargetsToController(controllerNode, batch);
+            console.log(
+                `[Dynamic Node State Controller] Captured ${captured} of ${batch.length} selected nodes.`
+            );
+        } else {
+            addTargetToController(controllerNode, targetNode);
+        }
     } finally {
         controllerNode.graph.afterChange();
     }
@@ -513,6 +842,30 @@ function addSpacerWidget(node, targetKey) {
         return [0, 16];
     };
     return spacerWidget;
+}
+
+/** Kopfzeile und Blaetterknoepfe. Nur sichtbar, wenn es mehr als eine Seite gibt. */
+function addPagerWidgets(node, start, shown, total, page, pageCount) {
+    const info = node.addWidget("button", "PageInfo", null, () => {});
+    info.label = `Targets ${start + 1}–${start + shown} of ${total}   ·   Page ${page + 1}/${pageCount}`;
+    info.serialize = false;
+    info.disabled = true;
+
+    const prev = node.addWidget("button", "PagePrev", null, () => {
+        node.properties.page = Math.max(0, (Number(node.properties.page) || 0) - 1);
+        node.rebuildUI();
+        app.graph.setDirtyCanvas(true);
+    });
+    prev.label = "◀ Prev";
+    prev.serialize = false;
+
+    const next = node.addWidget("button", "PageNext", null, () => {
+        node.properties.page = (Number(node.properties.page) || 0) + 1;
+        node.rebuildUI();
+        app.graph.setDirtyCanvas(true);
+    });
+    next.label = "Next ▶";
+    next.serialize = false;
 }
 
 function buildControllerWidgets(node) {
@@ -550,6 +903,13 @@ function buildControllerWidgets(node) {
         ctx.restore();
     };
 
+    node.snapshotWidget = node.addWidget(
+        "button",
+        "Snapshot Outputs",
+        null,
+        () => snapshotOutputsToController(node)
+    );
+
     node.targetCaptureWidget = node.addWidget(
         "button",
         targetCapturingControllerNode === node ? "Click target nodes..." : "Capture Target",
@@ -559,29 +919,40 @@ function buildControllerWidgets(node) {
                 setTargetCaptureNode(null);
                 return;
             }
+
+            // Bestand vor diesem Klick eine Mehrfachauswahl, wird sie sofort uebernommen.
+            // Eine einzelne markierte Node zaehlt bewusst nicht: sie stammt meistens aus
+            // einer frueheren Aktion, und Capture Target trug sie frueher unbemerkt ein.
+            // Ohne Mehrfachauswahl startet deshalb der gewohnte Klickmodus.
+            const selection = selectionBeforeClick.filter(
+                (candidate) => candidate !== node && candidate.graph === node.graph
+            );
+
+            if (selection.length > 1) {
+                node.graph.beforeChange();
+                try {
+                    const captured = addTargetsToController(node, selection);
+                    console.log(
+                        `[Dynamic Node State Controller] Captured ${captured} of ${selection.length} selected nodes.`
+                    );
+                } finally {
+                    node.graph.afterChange();
+                }
+                return;
+            }
+
             setTargetCaptureNode(node);
         }
     );
 
-    node.collapseWidget = node.addWidget(
+    node.updateFromGraphWidget = node.addWidget(
         "button",
-        node.properties.collapsed ? "Expand ▼" : "Collapse ▲",
+        "Update from Graph",
         null,
-        () => node.toggleCollapse()
+        () => updateControllerFromGraph(node)
     );
-
-    node.shortcutWidget = node.addWidget(
-        "text",
-        "Shortcut",
-        node.properties.shortcut || "",
-        (v) => {
-            const normalizedShortcut = normalizeShortcutString(v);
-            node.properties.shortcut = normalizedShortcut;
-            node.shortcutWidget.value = normalizedShortcut;
-            node.syncProperties();
-            app.graph.setDirtyCanvas(true);
-        }
-    );
+    // Traegt keinen Wert und zaehlt beim Laden nicht mit, siehe Kuerzel.
+    node.updateFromGraphWidget.serialize = false;
 
     node.shortcutCaptureWidget = node.addWidget(
         "button",
@@ -595,12 +966,41 @@ function buildControllerWidgets(node) {
             setCaptureNode(node);
         }
     );
+
+    // Beim Laden verteilt ComfyUI die gespeicherten widgets_values der Reihe nach auf die
+    // serialisierten Widgets (namedValuesRestore ist standardmaessig aus). Alte Workflows
+    // tragen das Kuerzel an Position 4; es muss deshalb das fuenfte serialisierte Widget
+    // bleiben. Ein fremder Wert an dieser Stelle hat am 2026-09-21 schon einmal alle
+    // Kuerzel gekostet.
+    node.shortcutWidget = node.addWidget(
+        "text",
+        "Shortcut",
+        node.properties.shortcut || "",
+        (v) => {
+            const normalizedShortcut = normalizeShortcutString(v);
+            node.properties.shortcut = normalizedShortcut;
+            node.shortcutWidget.value = normalizedShortcut;
+            node.syncProperties();
+            app.graph.setDirtyCanvas(true);
+        }
+    );
+    // Wie in addRowWithData: ein neu angelegtes Widget gleichen Namens erhielte sonst den
+    // alten gespeicherten Wert, und syncProperties schriebe ihn zurueck.
+    node.shortcutWidget.value = node.properties.shortcut || "";
+
+    node.collapseWidget = node.addWidget(
+        "button",
+        node.properties.collapsed ? "Expand ▼" : "Collapse ▲",
+        null,
+        () => node.toggleCollapse()
+    );
 }
 
 function rebuildControllerFromProperties(node) {
     if (!node.properties) node.properties = {};
     if (!Array.isArray(node.properties.rows)) node.properties.rows = [];
-    if (node.properties.collapsed === undefined) node.properties.collapsed = false;
+    if (node.properties.collapsed === undefined) node.properties.collapsed = true;
+    if (node.properties.page === undefined) node.properties.page = 0;
     if (typeof node.properties.shortcut !== "string") node.properties.shortcut = "";
 
     node.rows = [];
@@ -689,6 +1089,8 @@ function registerGlobalTargetCaptureHandler() {
     }
 
     const targetCaptureHandler = (event) => {
+        // Erst merken, dann verarbeiten: LiteGraph ersetzt die Auswahl gleich danach.
+        rememberSelectionBeforeClick();
         handleTargetCaptureMouseEvent(event);
     };
 
@@ -718,7 +1120,9 @@ app.registerExtension({
 
             if (!this.properties) this.properties = {};
             if (!Array.isArray(this.properties.rows)) this.properties.rows = [];
-            if (this.properties.collapsed === undefined) this.properties.collapsed = false;
+            // Neue Controller starten eingeklappt. Gespeicherte behalten ihren Zustand, weil
+            // onSerialize collapsed immer mitschreibt.
+            if (this.properties.collapsed === undefined) this.properties.collapsed = true;
             if (typeof this.properties.shortcut !== "string") this.properties.shortcut = "";
 
             rebuildControllerFromProperties(this);
@@ -748,7 +1152,7 @@ app.registerExtension({
             if (typeof savedProperties.collapsed === "boolean") {
                 this.properties.collapsed = savedProperties.collapsed;
             } else if (this.properties.collapsed === undefined) {
-                this.properties.collapsed = false;
+                this.properties.collapsed = true;
             }
 
             if (typeof savedProperties.shortcut === "string") {
@@ -797,6 +1201,24 @@ app.registerExtension({
             }
         };
 
+        const originalOnAfterGraphConfigured = nodeType.prototype.onAfterGraphConfigured;
+
+        nodeType.prototype.onAfterGraphConfigured = function () {
+            const result = originalOnAfterGraphConfigured
+                ? originalOnAfterGraphConfigured.apply(this, arguments)
+                : undefined;
+
+            // Laeuft mitten in ComfyUIs Einfuegen, vor dessen afterChange. Ein Fehler darf
+            // das Einfuegen nicht abbrechen, sonst bliebe die Undo-Klammer offen.
+            try {
+                releasePastedCopies(this.graph);
+            } catch (error) {
+                console.error("[Dynamic Node State Controller] Could not release pasted copies.", error);
+            }
+
+            return result;
+        };
+
         nodeType.prototype.toggleCollapse = function () {
             syncLiveValuesIntoProperties(this);
             this.properties.collapsed = !this.properties.collapsed;
@@ -819,7 +1241,19 @@ app.registerExtension({
 
             this.rows = [];
 
-            for (let data of storedRows) {
+            const pageCount = Math.max(1, Math.ceil(storedRows.length / ROWS_PER_PAGE));
+            let page = Number(this.properties.page) || 0;
+            page = Math.min(Math.max(0, page), pageCount - 1);
+            this.properties.page = page;
+
+            const start = page * ROWS_PER_PAGE;
+            const visibleRows = storedRows.slice(start, start + ROWS_PER_PAGE);
+
+            if (storedRows.length > ROWS_PER_PAGE) {
+                addPagerWidgets(this, start, visibleRows.length, storedRows.length, page, pageCount);
+            }
+
+            for (let data of visibleRows) {
                 this.addRowWithData(data.label, data.target_key, data.action);
             }
 
@@ -843,6 +1277,11 @@ app.registerExtension({
                 this.syncProperties();
             });
             row.labelWidget.label = "Target";
+            // ComfyUI merkt sich Widget-Werte je Node und Widget-Name und gibt einem neu
+            // angelegten Widget gleichen Namens den alten Wert zurueck. Beim Neuaufbau der
+            // Zeilen wuerde syncProperties diesen alten Wert zurueckschreiben. Deshalb den
+            // Wert der Zeile nach dem Anlegen ausdruecklich setzen.
+            row.labelWidget.value = row.label;
 
             row.actionWidget = this.addWidget(
                 "combo",
@@ -857,6 +1296,7 @@ app.registerExtension({
                 }
             );
             row.actionWidget.label = "Action";
+            row.actionWidget.value = row.action;
 
             row.removeWidget = this.addWidget("button", `Remove:${row.target_key}`, null, () => {
                 this.widgets = this.widgets.filter(
@@ -868,6 +1308,15 @@ app.registerExtension({
                 );
 
                 this.rows.splice(this.rows.indexOf(row), 1);
+
+                // Seit der Seitenanzeige mischt syncProperties nur noch ein. Das Loeschen
+                // muss deshalb ausdruecklich aus der Gesamtliste entfernen.
+                if (Array.isArray(this.properties.rows)) {
+                    this.properties.rows = this.properties.rows.filter(
+                        (stored) => stored.target_key !== row.target_key
+                    );
+                }
+
                 this.syncProperties();
                 this.rebuildUI();
             });
@@ -894,19 +1343,39 @@ app.registerExtension({
             syncLiveValuesIntoProperties(this);
             app.graph.beforeChange();
 
-            const actionRows =
-                Array.isArray(this.rows) && this.rows.length > 0
-                    ? this.rows
-                    : Array.isArray(this.properties?.rows)
-                        ? this.properties.rows
-                        : [];
+            // Immer die vollstaendige gespeicherte Liste. this.rows enthaelt seit der
+            // Seitenanzeige nur die sichtbare Seite; APPLY wuerde damit nur zehn Zeilen
+            // anwenden. syncLiveValuesIntoProperties laeuft direkt darueber und hat die
+            // sichtbaren Aenderungen bereits eingemischt.
+            const actionRows = getStoredRows(this);
 
             const duplicateTargets = [];
+
+            // Einmal ein Verzeichnis Schluessel -> Nodes bauen, statt je Zeile den
+            // ganzen Graphen zu durchsuchen. findNodesByTargetKey ist O(n); in dieser
+            // Schleife aufgerufen ergab das O(Zeilen x Nodes) — bei 9600 Zellen rund
+            // 92 Millionen Vergleiche je Anwendung, jeder mit String() und trim().
+            // Das blockierte den Haupt-Thread des Browsers.
+            //
+            // Das Verzeichnis fuehrt je Schluessel eine LISTE, damit die Erkennung
+            // doppelter Ziele unveraendert funktioniert. Es wird mit derselben Funktion
+            // gebaut, die auch die Suche benutzt, also sind die Treffer identisch. Ein
+            // Schnappschuss genuegt, weil applyRowAction ausschliesslich node.mode
+            // setzt und den Graphen nicht veraendert.
+            const nodesByTargetKey = new Map();
+            for (const graphNode of app.graph?._nodes ?? []) {
+                if (!graphNode || !graphNode.properties) continue;
+                const key = getNodeStateControllerKey(graphNode);
+                if (!key) continue;
+                const bucket = nodesByTargetKey.get(key);
+                if (bucket) bucket.push(graphNode);
+                else nodesByTargetKey.set(key, [graphNode]);
+            }
 
             for (let row of actionRows) {
                 if (!row.target_key) continue;
 
-                const matches = findNodesByTargetKey(row.target_key);
+                const matches = nodesByTargetKey.get(row.target_key) ?? [];
 
                 if (matches.length === 0) {
                     console.warn(

@@ -14,7 +14,7 @@ A ComfyUI custom-node pack for controlling node states and making prompt generat
 
 ### Node State Controller
 
-Control the state of multiple workflow nodes from one place. Capture target nodes, assign an action to each, and apply them together with one click or an optional keyboard shortcut.
+Control the state of multiple workflow nodes from one place. Capture target nodes one by one or take a whole selection at once, snapshot every output node, update all targets from the current graph, and apply them together with one click or an optional keyboard shortcut.
 
 | Interface | Definition |
 | --- | --- |
@@ -26,13 +26,55 @@ Control the state of multiple workflow nodes from one place. Capture target node
 <details>
 <summary>How to use</summary>
 
-Available actions are Mute, Unmute, Bypass, and Unbypass.
+Available actions are Mute, Unmute, Bypass, and Unbypass. A captured node keeps the
+action that matches its state at capture time, so you can set your graph up the way you
+want it and record that.
 
-1. Press <code>Capture Target</code>.
+A new controller starts collapsed. Press <code>Expand ▼</code> below the buttons to show
+its targets and <code>Collapse ▲</code> to hide them again.
+
+**Capture one node at a time**
+
+1. Press <code>Capture Target</code> with nothing or only a single node selected.
 2. Click the nodes you want to control.
-3. Assign an action to each captured node.
-4. Press the capture button again to stop capturing targets.
-5. Press <code>APPLY</code> or use the configured keyboard shortcut to change all target states.
+3. Press the capture button again to stop capturing targets.
+
+**Capture a whole selection**
+
+Select several nodes, then press <code>Capture Target</code> once. All of them are added
+immediately and no click mode starts.
+
+**Snapshot the branches**
+
+Press <code>Snapshot Outputs</code> to capture every output node of the graph with its
+current state. ComfyUI executes backwards from its output nodes, so these alone decide
+which branch runs — one controller per variant is enough to switch between them.
+
+<code>Snapshot Outputs</code> only adds output nodes that are not in the list yet. Rows
+that are already there keep their action, and so does a node you capture again — manual
+edits survive.
+
+**Update from the graph**
+
+Set the nodes in your graph the way you want them, then press
+<code>Update from Graph</code>. Every row takes the current state of its node. A short
+message tells you how many rows changed and whether a target was not found.
+<kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes the update.
+
+**Copying**
+
+A copied controller controls the same nodes as the original. Copies of target nodes
+within the same workflow start fresh: no existing controller controls them until you
+capture them. Copy nodes together with their controller into another workflow and they
+keep working together.
+
+**Working with long lists**
+
+Above ten targets the list is shown one page at a time, with a header and Prev/Next
+buttons. <code>APPLY</code> always acts on every target, not only on the visible page.
+
+Press <code>APPLY</code> or use the configured keyboard shortcut to change all target
+states.
 
 <img src="assets/node-state-controller-demo.gif" alt="Capturing and controlling nodes with Node State Controller" width="760">
 
