@@ -834,18 +834,21 @@ function handleTargetCaptureMouseEvent(event) {
 }
 
 function addSpacerWidget(node, targetKey) {
-    const spacerWidget = node.addWidget("button", `Spacer:${targetKey}`, null, () => {});
+    const spacerWidget = node.addWidget("button", `Spacer:${targetKey}`, null, () => {}, { hideInPanel: true });
     spacerWidget.label = " ";
     spacerWidget.serialize = false;
     spacerWidget.disabled = true;
     spacerWidget.computeSize = function () {
         return [0, 16];
     };
+    spacerWidget.draw = function () {};
     return spacerWidget;
 }
 
 /** Kopfzeile und Blaetterknoepfe. Nur sichtbar, wenn es mehr als eine Seite gibt. */
 function addPagerWidgets(node, start, shown, total, page, pageCount) {
+    addSpacerWidget(node, "Pager");
+
     const info = node.addWidget("button", "PageInfo", null, () => {});
     info.label = `Targets ${start + 1}–${start + shown} of ${total}   ·   Page ${page + 1}/${pageCount}`;
     info.serialize = false;
@@ -868,6 +871,14 @@ function addPagerWidgets(node, start, shown, total, page, pageCount) {
     next.serialize = false;
 }
 
+/** Hebt den negativen Rand der Nodes-2.0-Huelle fuer genau diese Zeichenflaeche auf. */
+function alignVueLegacyCanvas(canvas) {
+    const wrapper = canvas.parentElement;
+    if (!wrapper) return;
+    const left = `${-(parseFloat(getComputedStyle(wrapper).marginLeft) || 0)}px`;
+    if (canvas.style.left !== left) canvas.style.left = left;
+}
+
 function buildControllerWidgets(node) {
     node.widgets = [];
 
@@ -880,7 +891,12 @@ function buildControllerWidgets(node) {
     };
     node.applyWidget.draw = function (ctx, _node, width, y, _height, lowQuality) {
         const height = this.computeSize(width)[1];
-        const margin = 15;
+        // Nodes 2.0 zeichnet dieses Widget auf eine eigene Zeichenflaeche, die das Frontend
+        // um seinen negativen Rand nach links verschiebt. Sie wird auf die Spalte der
+        // uebrigen Buttons zurueckgesetzt und dort ohne den Canvas-Rand gefuellt.
+        const vueCanvas = ctx.canvas?.closest?.(".lg-node") ? ctx.canvas : null;
+        if (vueCanvas) alignVueLegacyCanvas(vueCanvas);
+        const margin = vueCanvas ? 1 : 15;
 
         ctx.save();
         ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR || "#222";
@@ -1268,9 +1284,7 @@ app.registerExtension({
                 spacerWidget: null
             };
 
-            if (Array.isArray(this.rows) && this.rows.length > 0) {
-                row.spacerWidget = addSpacerWidget(this, row.target_key);
-            }
+            row.spacerWidget = addSpacerWidget(this, row.target_key);
 
             row.labelWidget = this.addWidget("text", `Target:${row.target_key}`, row.label, (v) => {
                 row.label = String(v ?? "").trim();
